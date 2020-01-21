@@ -1103,11 +1103,11 @@ class DGLGraph(DGLBaseGraph):
         Examples
         --------
         >>> G = dgl.DGLGraph()
-        >>> g.add_nodes(2)
-        >>> g.number_of_nodes()
+        >>> G.add_nodes(2)
+        >>> G.number_of_nodes()
         2
-        >>> g.add_nodes(3)
-        >>> g.number_of_nodes()
+        >>> G.add_nodes(3)
+        >>> G.number_of_nodes()
         5
 
         Adding new nodes with features:
@@ -1117,8 +1117,8 @@ class DGLGraph(DGLBaseGraph):
             ``torch.tensor`` with ``mxnet.ndarray``).
 
         >>> import torch as th
-        >>> g.add_nodes(2, {'x': th.ones(2, 4)})    # default zero initializer
-        >>> g.ndata['x']
+        >>> G.add_nodes(2, {'x': th.ones(2, 4)})    # default zero initializer
+        >>> G.ndata['x']
         tensor([[0., 0., 0., 0.],
                 [0., 0., 0., 0.],
                 [0., 0., 0., 0.],
