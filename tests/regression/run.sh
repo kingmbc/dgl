@@ -1,22 +1,31 @@
+#!/bin/bash
+set -e
+
+if [ $# -ne 2 ]; then
+    echo "run.sh <repo> <branch>"
+    exit 1
+fi
+
+REPO=$1
+BRANCH=$2
+
 . /opt/conda/etc/profile.d/conda.sh
 
 cd ~
+mkdir regression
 cd regression
+# git config core.filemode false
+git clone --recursive https://github.com/$REPO/dgl.git 
 cd dgl
-# git clone --recursive https://github.com/dmlc/dgl.git 
-git pull 
-git submodule init
-git submodule update --recursive
+git checkout $BRANCH
+mkdir asv
+cp -r ~/asv_data/* asv/
 
 conda activate base
-pip install asv
+pip install --upgrade pip
+pip install asv numpy
 
-for backend in pytorch mxnet tensorflow
-do 
-conda activate "${backend}-ci"
-pip uninstall -y dgl-cu101
-pip install --pre dgl-cu101
-done
+export DGL_LIBRARY_PATH="~/dgl/build"
 
 conda activate base
 asv machine --yes

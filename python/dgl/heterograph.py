@@ -149,6 +149,8 @@ class DGLHeteroGraph(object):
     >>> g['plays'].number_of_nodes()  # ERROR!! There are two types 'user' and 'game'.
     >>> g['plays'].number_of_edges()  # OK!! because there is only one edge type 'plays'
 
+    TODO(minjie): docstring about uni-directional bipartite graph
+
     Metagraph
     ---------
     For each heterogeneous graph, one can often infer the *metagraph*, the template of
@@ -171,8 +173,10 @@ class DGLHeteroGraph(object):
     ----------
     gidx : HeteroGraphIndex
         Graph index object.
-    ntypes : list of str
+    ntypes : list of str, pair of list of str
         Node type list. ``ntypes[i]`` stores the name of node type i.
+        If a pair is given, the graph created is a uni-directional bipartite graph,
+        and its SRC node types and DST node types are given as in the pair.
     etypes : list of str
         Edge type list. ``etypes[i]`` stores the name of edge type i.
     node_frames : list of FrameRef, optional
@@ -196,21 +200,48 @@ class DGLHeteroGraph(object):
     def _init(self, gidx, ntypes, etypes, node_frames, edge_frames):
         """Init internal states."""
         self._graph = gidx
-        self._ntypes = ntypes
+
+        # Handle node types
+        if isinstance(ntypes, tuple):
+            if len(ntypes) != 2:
+                errmsg = 'Invalid input. Expect a pair (srctypes, dsttypes) but got {}'.format(
+                    ntypes)
+                raise TypeError(errmsg)
+            if not is_unibipartite(self._graph.metagraph):
+                raise ValueError('Invalid input. The metagraph must be a uni-directional'
+                                 ' bipartite graph.')
+            self._ntypes = ntypes[0] + ntypes[1]
+            self._srctypes_invmap = {t : i for i, t in enumerate(ntypes[0])}
+            self._dsttypes_invmap = {t : i + len(ntypes[0]) for i, t in enumerate(ntypes[1])}
+            self._is_unibipartite = True
+        else:
+            self._ntypes = ntypes
+            src_dst_map = find_src_dst_ntypes(self._ntypes, self._graph.metagraph)
+            self._is_unibipartite = (src_dst_map is not None)
+            if self._is_unibipartite:
+                self._srctypes_invmap, self._dsttypes_invmap = src_dst_map
+            else:
+                self._srctypes_invmap = {t : i for i, t in enumerate(self._ntypes)}
+                self._dsttypes_invmap = self._srctypes_invmap
+
+        # Handle edge types
         self._etypes = etypes
-        self._nx_metagraph = None
         self._canonical_etypes = make_canonical_etypes(
             self._etypes, self._ntypes, self._graph.metagraph)
+
         # An internal map from etype to canonical etype tuple.
-        # If two etypes have the same name, an empty tuple is stored instead to indicte ambiguity.
+        # If two etypes have the same name, an empty tuple is stored instead to indicate
+        # ambiguity.
         self._etype2canonical = {}
         for i, ety in enumerate(self._etypes):
             if ety in self._etype2canonical:
                 self._etype2canonical[ety] = tuple()
             else:
                 self._etype2canonical[ety] = self._canonical_etypes[i]
-        self._ntypes_invmap = {t : i for i, t in enumerate(self._ntypes)}
         self._etypes_invmap = {t : i for i, t in enumerate(self._canonical_etypes)}
+
+        # Cached metagraph in networkx
+        self._nx_metagraph = None
 
         # node and edge frame
         if node_frames is None:
@@ -234,8 +265,6 @@ class DGLHeteroGraph(object):
             frame = FrameRef(Frame(num_rows=self._graph.number_of_edges(i)))
             frame.set_initializer(init.zero_initializer)
             self._msg_frames.append(frame)
-
-        self._is_multigraph = None
 
     def __getstate__(self):
         return self._graph, self._ntypes, self._etypes, self._node_frames, self._edge_frames
@@ -305,6 +334,24 @@ class DGLHeteroGraph(object):
     #################################################################
 
     @property
+    def is_unibipartite(self):
+        """Return whether the graph is a uni-bipartite graph.
+
+        A uni-bipartite heterograph can further divide its node types into two sets:
+        SRC and DST. All edges are from nodes in SRC to nodes in DST. The following APIs
+        can be used to get the nodes and types that belong to SRC and DST sets:
+
+        * :func:`srctype` and :func:`dsttype`
+        * :func:`srcdata` and :func:`dstdata`
+        * :func:`srcnodes` and :func:`dstnodes`
+
+        Note that we allow two node types to have the same name as long as one
+        belongs to SRC while the other belongs to DST. To distinguish them, prepend
+        the name with ``"SRC/"`` or ``"DST/"`` when specifying a node type.
+        """
+        return self._is_unibipartite
+
+    @property
     def ntypes(self):
         """Return the list of node types of this graph.
 
@@ -362,6 +409,26 @@ class DGLHeteroGraph(object):
         [('user', 'follows', 'user'), ('user', 'plays', 'game')]
         """
         return self._canonical_etypes
+
+    @property
+    def srctypes(self):
+        """Return the node types in the SRC category. Return :attr:``ntypes`` if
+        the graph is not a uni-bipartite graph.
+        """
+        if self.is_unibipartite:
+            return sorted(list(self._srctypes_invmap.keys()))
+        else:
+            return self.ntypes
+
+    @property
+    def dsttypes(self):
+        """Return the node types in the DST category. Return :attr:``ntypes`` if
+        the graph is not a uni-bipartite graph.
+        """
+        if self.is_unibipartite:
+            return sorted(list(self._dsttypes_invmap.keys()))
+        else:
+            return self.ntypes
 
     @property
     def metagraph(self):
@@ -461,14 +528,73 @@ class DGLHeteroGraph(object):
         -------
         int
         """
+        if self.is_unibipartite and ntype is not None:
+            # Only check 'SRC/' and 'DST/' prefix when is_unibipartite graph is True.
+            if ntype.startswith('SRC/'):
+                return self.get_ntype_id_from_src(ntype[4:])
+            elif ntype.startswith('DST/'):
+                return self.get_ntype_id_from_dst(ntype[4:])
+            # If there is no prefix, fallback to normal lookup.
+
+        # Lookup both SRC and DST
         if ntype is None:
-            if self._graph.number_of_ntypes() != 1:
+            if self.is_unibipartite or len(self._srctypes_invmap) != 1:
                 raise DGLError('Node type name must be specified if there are more than one '
                                'node types.')
             return 0
-        ntid = self._ntypes_invmap.get(ntype, None)
+        ntid = self._srctypes_invmap.get(ntype, self._dsttypes_invmap.get(ntype, None))
         if ntid is None:
             raise DGLError('Node type "{}" does not exist.'.format(ntype))
+        return ntid
+
+    def get_ntype_id_from_src(self, ntype):
+        """Return the id of the given SRC node type.
+
+        ntype can also be None. If so, there should be only one node type in the
+        SRC category. Callable even when the self graph is not uni-bipartite.
+
+        Parameters
+        ----------
+        ntype : str
+            Node type
+
+        Returns
+        -------
+        int
+        """
+        if ntype is None:
+            if len(self._srctypes_invmap) != 1:
+                raise DGLError('SRC node type name must be specified if there are more than one '
+                               'SRC node types.')
+            return next(iter(self._srctypes_invmap.values()))
+        ntid = self._srctypes_invmap.get(ntype, None)
+        if ntid is None:
+            raise DGLError('SRC node type "{}" does not exist.'.format(ntype))
+        return ntid
+
+    def get_ntype_id_from_dst(self, ntype):
+        """Return the id of the given DST node type.
+
+        ntype can also be None. If so, there should be only one node type in the
+        DST category. Callable even when the self graph is not uni-bipartite.
+
+        Parameters
+        ----------
+        ntype : str
+            Node type
+
+        Returns
+        -------
+        int
+        """
+        if ntype is None:
+            if len(self._dsttypes_invmap) != 1:
+                raise DGLError('DST node type name must be specified if there are more than one '
+                               'DST node types.')
+            return next(iter(self._dsttypes_invmap.values()))
+        ntid = self._dsttypes_invmap.get(ntype, None)
+        if ntid is None:
+            raise DGLError('DST node type "{}" does not exist.'.format(ntype))
         return ntid
 
     def get_etype_id(self, etype):
@@ -518,7 +644,47 @@ class DGLHeteroGraph(object):
         --------
         ndata
         """
-        return HeteroNodeView(self)
+        return HeteroNodeView(self, self.get_ntype_id)
+
+    @property
+    def srcnodes(self):
+        """Return a SRC node view that can be used to set/get feature
+        data of a single node type.
+
+        Examples
+        --------
+        The following example uses PyTorch backend.
+
+        To set features of all users
+
+        >>> g = dgl.biparite([(0, 1), (1, 2)], 'user', 'plays', 'game')
+        >>> g.srcnodes['user'].data['h'] = torch.zeros(2, 5)
+
+        See Also
+        --------
+        srcdata
+        """
+        return HeteroNodeView(self, self.get_ntype_id_from_src)
+
+    @property
+    def dstnodes(self):
+        """Return a DST node view that can be used to set/get feature
+        data of a single node type.
+
+        Examples
+        --------
+        The following example uses PyTorch backend.
+
+        To set features of all games
+
+        >>> g = dgl.biparite([(0, 1), (1, 2)], 'user', 'plays', 'game')
+        >>> g.dstnodes['game'].data['h'] = torch.zeros(3, 5)
+
+        See Also
+        --------
+        dstdata
+        """
+        return HeteroNodeView(self, self.get_ntype_id_from_dst)
 
     @property
     def ndata(self):
@@ -540,7 +706,109 @@ class DGLHeteroGraph(object):
         --------
         nodes
         """
-        return HeteroNodeDataView(self, None, ALL)
+        ntid = self.get_ntype_id(None)
+        ntype = self.ntypes[0]
+        return HeteroNodeDataView(self, ntype, ntid, ALL)
+
+    @property
+    def srcdata(self):
+        """Return the data view of all nodes in the SRC category.
+
+        Only works if the graph is either
+
+        * Uni-bipartite and has one node type in the SRC category.
+
+        * Non-uni-bipartite and has only one node type (in this case identical to
+        :any:`DGLHeteroGraph.ndata`)
+
+        Examples
+        --------
+        The following example uses PyTorch backend.
+
+        To set features of all source nodes in a graph with only one edge type:
+
+        >>> g = dgl.bipartite([(0, 1), (1, 2)], 'user', 'plays', 'game')
+        >>> g.srcdata['h'] = torch.zeros(2, 5)
+
+        This is equivalent to
+
+        >>> g.nodes['user'].data['h'] = torch.zeros(2, 5)
+
+        Also work on more complex uni-bipartite graph
+
+        >>> g = dgl.heterograph({
+        ...     ('user', 'plays', 'game'), [(0, 1), (1, 2)],
+        ...     ('user', 'reads', 'book'), [(0, 1), (1, 0)],
+        ...     })
+        >>> print(g.is_unibipartite)
+        True
+        >>> g.srcdata['h'] = torch.zeros(2, 5)
+
+        Notes
+        -----
+        This is identical to :any:`DGLHeteroGraph.ndata` if the graph is homogeneous.
+
+        See Also
+        --------
+        nodes
+        """
+        err_msg = (
+            'srcdata is only allowed when there is only one %s type.' %
+            ('SRC' if self.is_unibipartite else 'node'))
+        assert len(self.srctypes) == 1, err_msg
+        ntype = self.srctypes[0]
+        ntid = self.get_ntype_id_from_src(ntype)
+        return HeteroNodeDataView(self, ntype, ntid, ALL)
+
+    @property
+    def dstdata(self):
+        """Return the data view of all destination nodes.
+
+        Only works if the graph is either
+
+        * Uni-bipartite and has one node type in the SRC category.
+
+        * Non-uni-bipartite and has only one node type (in this case identical to
+        :any:`DGLHeteroGraph.ndata`)
+
+        Examples
+        --------
+        The following example uses PyTorch backend.
+
+        To set features of all source nodes in a graph with only one edge type:
+
+        >>> g = dgl.bipartite([(0, 1), (1, 2)], 'user', 'plays', 'game')
+        >>> g.dstdata['h'] = torch.zeros(3, 5)
+
+        This is equivalent to
+
+        >>> g.nodes['game'].data['h'] = torch.zeros(3, 5)
+
+        Also work on more complex uni-bipartite graph
+
+        >>> g = dgl.heterograph({
+        ...     ('user', 'plays', 'game'), [(0, 1), (1, 2)],
+        ...     ('store', 'sells', 'game'), [(0, 1), (1, 0)],
+        ...     })
+        >>> print(g.is_unibipartite)
+        True
+        >>> g.dstdata['h'] = torch.zeros(3, 5)
+
+        Notes
+        -----
+        This is identical to :any:`DGLHeteroGraph.ndata` if the graph is homogeneous.
+
+        See Also
+        --------
+        nodes
+        """
+        err_msg = (
+            'dstdata is only allowed when there is only one %s type.' %
+            ('DST' if self.is_unibipartite else 'node'))
+        assert len(self.dsttypes) == 1, err_msg
+        ntype = self.dsttypes[0]
+        ntid = self.get_ntype_id_from_dst(ntype)
+        return HeteroNodeDataView(self, ntype, ntid, ALL)
 
     @property
     def edges(self):
@@ -635,9 +903,9 @@ class DGLHeteroGraph(object):
         if len(etypes) == 1:
             # no ambiguity: return the unitgraph itself
             srctype, etype, dsttype = self._canonical_etypes[etypes[0]]
-            stid = self.get_ntype_id(srctype)
+            stid = self.get_ntype_id_from_src(srctype)
             etid = self.get_etype_id((srctype, etype, dsttype))
-            dtid = self.get_ntype_id(dsttype)
+            dtid = self.get_ntype_id_from_dst(dsttype)
             new_g = self._graph.get_relation_graph(etid)
 
             if stid == dtid:
@@ -714,6 +982,62 @@ class DGLHeteroGraph(object):
         """
         return self._graph.number_of_nodes(self.get_ntype_id(ntype))
 
+    def number_of_src_nodes(self, ntype=None):
+        """Return the number of nodes of the given SRC node type in the heterograph.
+
+        The heterograph is usually a unidirectional bipartite graph.
+
+        Parameters
+        ----------
+        ntype : str, optional
+            Node type.
+            If omitted, there should be only one node type in the SRC category.
+
+        Returns
+        -------
+        int
+            The number of nodes
+
+        Examples
+        --------
+        >>> g = dgl.bipartite([(0, 1), (1, 2)], 'user', 'plays', 'game')
+        >>> g.number_of_src_nodes('user')
+        2
+        >>> g.number_of_src_nodes()
+        2
+        >>> g.number_of_nodes('user')
+        2
+        """
+        return self._graph.number_of_nodes(self.get_ntype_id_from_src(ntype))
+
+    def number_of_dst_nodes(self, ntype=None):
+        """Return the number of nodes of the given DST node type in the heterograph.
+
+        The heterograph is usually a unidirectional bipartite graph.
+
+        Parameters
+        ----------
+        ntype : str, optional
+            Node type.
+            If omitted, there should be only one node type in the DST category.
+
+        Returns
+        -------
+        int
+            The number of nodes
+
+        Examples
+        --------
+        >>> g = dgl.bipartite([(0, 1), (1, 2)], 'user', 'plays', 'game')
+        >>> g.number_of_dst_nodes('game')
+        3
+        >>> g.number_of_dst_nodes()
+        3
+        >>> g.number_of_nodes('game')
+        3
+        """
+        return self._graph.number_of_nodes(self.get_ntype_id_from_dst(ntype))
+
     def number_of_edges(self, etype=None):
         """Return the number of edges of the given type in the heterograph.
 
@@ -749,10 +1073,7 @@ class DGLHeteroGraph(object):
         bool
             True if the graph is a multigraph, False otherwise.
         """
-        if self._is_multigraph is None:
-            return self._graph.is_multigraph()
-        else:
-            return self._is_multigraph
+        return self._graph.is_multigraph()
 
     @property
     def is_readonly(self):
@@ -969,7 +1290,7 @@ class DGLHeteroGraph(object):
         """
         return self._graph.successors(self.get_etype_id(etype), v).tousertensor()
 
-    def edge_id(self, u, v, force_multi=False, etype=None):
+    def edge_id(self, u, v, force_multi=None, return_array=False, etype=None):
         """Return the edge ID, or an array of edge IDs, between source node
         `u` and destination node `v`, with the specified edge type
 
@@ -980,7 +1301,11 @@ class DGLHeteroGraph(object):
         v : int
             The node ID of destination type.
         force_multi : bool, optional
-            If False, will return a single edge ID if the graph is a simple graph.
+            Deprecated (Will be deleted in the future).
+            If False, will return a single edge ID.
+            If True, will always return an array. (Default: False)
+        return_array : bool, optional
+            If False, will return a single edge ID.
             If True, will always return an array. (Default: False)
         etype : str or tuple of str, optional
             The edge type. Can be omitted if there is only one edge type
@@ -989,8 +1314,13 @@ class DGLHeteroGraph(object):
         Returns
         -------
         int or tensor
-            The edge ID if ``force_multi == True`` and the graph is a simple graph.
+            The edge ID if ``return_array == False``.
             The edge ID array otherwise.
+
+        Notes
+        -----
+        If multiply edges exist between `u` and `v` and return_array is False,
+        the result is undefined.
 
         Examples
         --------
@@ -1006,7 +1336,7 @@ class DGLHeteroGraph(object):
 
         >>> plays_g.edge_id(1, 2, etype=('user', 'plays', 'game'))
         2
-        >>> g.edge_id(1, 2, force_multi=True, etype=('user', 'follows', 'user'))
+        >>> g.edge_id(1, 2, return_array=True, etype=('user', 'follows', 'user'))
         tensor([1, 2])
 
         See Also
@@ -1014,9 +1344,20 @@ class DGLHeteroGraph(object):
         edge_ids
         """
         idx = self._graph.edge_id(self.get_etype_id(etype), u, v)
-        return idx.tousertensor() if force_multi or self._graph.is_multigraph() else idx[0]
+        if force_multi is not None:
+            dgl_warning("force_multi will be deprecated." \
+                        "Please use return_array instead")
+            return_array = force_multi
 
-    def edge_ids(self, u, v, force_multi=False, etype=None):
+        if return_array:
+            return idx.tousertensor()
+        else:
+            assert len(idx) == 1, "For return_array=False, there should be one and " \
+                "only one edge between u and v, but get {} edges. " \
+                "Please use return_array=True instead".format(len(idx))
+            return idx[0]
+
+    def edge_ids(self, u, v, force_multi=None, return_uv=False, etype=None):
         """Return all edge IDs between source node array `u` and destination
         node array `v` with the specified edge type.
 
@@ -1027,8 +1368,11 @@ class DGLHeteroGraph(object):
         v : list, tensor
             The node ID array of destination type.
         force_multi : bool, optional
+            Deprecated (Will be deleted in the future).
             Whether to always treat the graph as a multigraph. See the
             "Returns" for their effects. (Default: False)
+        return_uv : bool
+            See the "Returns" for their effects. (Default: False)
         etype : str or tuple of str, optional
             The edge type. Can be omitted if there is only one edge type
             in the graph.
@@ -1037,9 +1381,8 @@ class DGLHeteroGraph(object):
         -------
         tensor, or (tensor, tensor, tensor)
 
-            * If the graph is a simple graph and ``force_multi=False``, return
-            a single edge ID array ``e``.  ``e[i]`` is the edge ID between ``u[i]``
-            and ``v[i]``.
+            * If ``return_uv=False``, return a single edge ID array ``e``.
+            ``e[i]`` is the edge ID between ``u[i]`` and ``v[i]``.
 
             * Otherwise, return three arrays ``(eu, ev, e)``.  ``e[i]`` is the ID
             of an edge between ``eu[i]`` and ``ev[i]``.  All edges between ``u[i]``
@@ -1047,9 +1390,12 @@ class DGLHeteroGraph(object):
 
         Notes
         -----
-        If the graph is a simple graph, ``force_multi=False``, and no edge
+        If the graph is a simple graph, ``return_uv=False``, and no edge
         exists between some pairs of ``u[i]`` and ``v[i]``, the result is undefined
         and an empty tensor is returned.
+
+        If the graph is a multi graph, ``return_uv=False``, and multi edges
+        exist between some pairs of `u[i]` and `v[i]`, the result is undefined.
 
         Examples
         --------
@@ -1067,7 +1413,7 @@ class DGLHeteroGraph(object):
         tensor([], dtype=torch.int64)
         >>> plays_g.edge_ids([1], [2], etype=('user', 'plays', 'game'))
         tensor([2])
-        >>> g.edge_ids([1], [2], force_multi=True, etype=('user', 'follows', 'user'))
+        >>> g.edge_ids([1], [2], return_uv=True, etype=('user', 'follows', 'user'))
         (tensor([1, 1]), tensor([2, 2]), tensor([1, 2]))
 
         See Also
@@ -1077,9 +1423,17 @@ class DGLHeteroGraph(object):
         u = utils.toindex(u)
         v = utils.toindex(v)
         src, dst, eid = self._graph.edge_ids(self.get_etype_id(etype), u, v)
-        if force_multi or self._graph.is_multigraph():
+        if force_multi is not None:
+            dgl_warning("force_multi will be deprecated, " \
+                        "Please use return_uv instead")
+            return_uv = force_multi
+
+        if return_uv:
             return src.tousertensor(), dst.tousertensor(), eid.tousertensor()
         else:
+            assert len(eid) == max(len(u), len(v)), "If return_uv=False, there should be one and " \
+                "only one edge between each u and v, expect {} edges but get {}. " \
+                "Please use return_uv=True instead".format(max(len(u), len(v)), len(eid))
             return eid.tousertensor()
 
     def find_edges(self, eid, etype=None):
@@ -1684,6 +2038,7 @@ class DGLHeteroGraph(object):
         node_frames = [self._node_frames[self.get_ntype_id(ntype)] for ntype in ntypes]
         edge_frames = []
 
+        num_nodes_per_type = [self.number_of_nodes(ntype) for ntype in ntypes]
         ntypes_invmap = {ntype: i for i, ntype in enumerate(ntypes)}
         srctype_id, dsttype_id, _ = self._graph.metagraph.edges('eid')
         for i in range(len(self._etypes)):
@@ -1696,8 +2051,9 @@ class DGLHeteroGraph(object):
                 induced_etypes.append(self.etypes[i])
                 edge_frames.append(self._edge_frames[i])
 
-        metagraph = graph_index.from_edge_list(meta_edges, True, True)
-        hgidx = heterograph_index.create_heterograph_from_relations(metagraph, rel_graphs)
+        metagraph = graph_index.from_edge_list(meta_edges, True)
+        hgidx = heterograph_index.create_heterograph_from_relations(
+            metagraph, rel_graphs, utils.toindex(num_nodes_per_type))
         hg = DGLHeteroGraph(hgidx, ntypes, induced_etypes, node_frames, edge_frames)
         return hg
 
@@ -1767,9 +2123,11 @@ class DGLHeteroGraph(object):
         edge_frames = [self._edge_frames[i] for i in etype_ids]
         induced_ntypes = [self._ntypes[i] for i in ntypes_invmap]
         induced_etypes = [self._etypes[i] for i in etype_ids]   # get the "name" of edge type
+        num_nodes_per_induced_type = [self.number_of_nodes(ntype) for ntype in induced_ntypes]
 
-        metagraph = graph_index.from_edge_list((mapped_meta_src, mapped_meta_dst), True, True)
-        hgidx = heterograph_index.create_heterograph_from_relations(metagraph, rel_graphs)
+        metagraph = graph_index.from_edge_list((mapped_meta_src, mapped_meta_dst), True)
+        hgidx = heterograph_index.create_heterograph_from_relations(
+            metagraph, rel_graphs, utils.toindex(num_nodes_per_induced_type))
         hg = DGLHeteroGraph(hgidx, induced_ntypes, induced_etypes, node_frames, edge_frames)
         return hg
 
@@ -2644,7 +3002,7 @@ class DGLHeteroGraph(object):
         """
         # infer receive node type
         ntype = infer_ntype_from_dict(self, reducer_dict)
-        ntid = self.get_ntype_id(ntype)
+        ntid = self.get_ntype_id_from_dst(ntype)
         if is_all(v):
             v = F.arange(0, self.number_of_nodes(ntid))
         elif isinstance(v, int):
@@ -2853,7 +3211,7 @@ class DGLHeteroGraph(object):
         """
         # infer receive node type
         ntype = infer_ntype_from_dict(self, etype_dict)
-        dtid = self.get_ntype_id(ntype)
+        dtid = self.get_ntype_id_from_dst(ntype)
 
         # TODO(minjie): currently loop over each edge type and reuse the old schedule.
         #   Should replace it with fused kernel.
@@ -3045,7 +3403,7 @@ class DGLHeteroGraph(object):
             return
         # infer receive node type
         ntype = infer_ntype_from_dict(self, etype_dict)
-        dtid = self.get_ntype_id(ntype)
+        dtid = self.get_ntype_id_from_dst(ntype)
         # TODO(minjie): currently loop over each edge type and reuse the old schedule.
         #   Should replace it with fused kernel.
         all_out = []
@@ -3457,7 +3815,8 @@ class DGLHeteroGraph(object):
         src, dst = self.edges()
         src = F.asnumpy(src)
         dst = F.asnumpy(dst)
-        nx_graph = nx.MultiDiGraph() if self.is_multigraph else nx.DiGraph()
+        # xiangsx: Always treat graph as multigraph
+        nx_graph = nx.MultiDiGraph()
         nx_graph.add_nodes_from(range(self.number_of_nodes()))
         for eid, (u, v) in enumerate(zip(src, dst)):
             nx_graph.add_edge(u, v, id=eid)
@@ -3501,7 +3860,7 @@ class DGLHeteroGraph(object):
         >>> import torch
         >>> import dgl
         >>> import dgl.function as fn
-        >>> g = dgl.graph([], 'user', 'follows', card=4)
+        >>> g = dgl.graph([], 'user', 'follows', num_nodes=4)
         >>> g.nodes['user'].data['h'] = torch.tensor([[0.], [1.], [1.], [0.]])
         >>> g.filter_nodes(lambda nodes: (nodes.data['h'] == 1.).squeeze(1), ntype='user')
         tensor([1, 2])
@@ -3747,6 +4106,10 @@ class DGLHeteroGraph(object):
         self._node_frames = old_nframes
         self._edge_frames = old_eframes
 
+    def is_homograph(self):
+        """Return if the graph is homogeneous."""
+        return len(self.ntypes) == 1 and len(self.etypes) == 1
+
 ############################################################
 # Internal APIs
 ############################################################
@@ -3779,6 +4142,58 @@ def make_canonical_etypes(etypes, ntypes, metagraph):
     src, dst, eid = metagraph.edges()
     rst = [(ntypes[sid], etypes[eid], ntypes[did]) for sid, did, eid in zip(src, dst, eid)]
     return rst
+
+def is_unibipartite(graph):
+    """Internal function that returns whether the given graph is a uni-directional
+    bipartite graph.
+
+    Parameters
+    ----------
+    graph : GraphIndex
+        Input graph
+
+    Returns
+    -------
+    bool
+        True if the graph is a uni-bipartite.
+    """
+    src, dst, _ = graph.edges()
+    return set(src.tonumpy()).isdisjoint(set(dst.tonumpy()))
+
+def find_src_dst_ntypes(ntypes, metagraph):
+    """Internal function to split ntypes into SRC and DST categories.
+
+    If the metagraph is not a uni-bipartite graph (so that the SRC and DST categories
+    are not well-defined), return None.
+
+    For node types that are isolated (i.e, no relation is associated with it), they
+    are assigned to the SRC category.
+
+    Parameters
+    ----------
+    ntypes : list of str
+        Node type list
+    metagraph : GraphIndex
+        Meta graph.
+
+    Returns
+    -------
+    (dict[int, str], dict[int, str]) or None
+        Node types belonging to SRC and DST categories. Types are stored in
+        a dictionary from type name to type id. Return None if the graph is
+        not uni-bipartite.
+    """
+    src, dst, _ = metagraph.edges()
+    if set(src.tonumpy()).isdisjoint(set(dst.tonumpy())):
+        srctypes = {ntypes[tid] : tid for tid in src}
+        dsttypes = {ntypes[tid] : tid for tid in dst}
+        # handle isolated node types
+        for ntid, ntype in enumerate(ntypes):
+            if ntype not in srctypes and ntype not in dsttypes:
+                srctypes[ntype] = ntid
+        return srctypes, dsttypes
+    else:
+        return None
 
 def infer_ntype_from_dict(graph, etype_dict):
     """Infer node type from dictionary of edge type to values.

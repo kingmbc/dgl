@@ -54,6 +54,16 @@ def test_atom_total_degree():
     assert atom_total_degree(mol.GetAtomWithIdx(0)) == [4]
     assert atom_total_degree(mol.GetAtomWithIdx(2)) == [2]
 
+def test_atom_explicit_valence_one_hot():
+    mol = test_mol1()
+    assert atom_implicit_valence_one_hot(mol.GetAtomWithIdx(0), [1, 2, 3]) == [1, 0, 0]
+    assert atom_implicit_valence_one_hot(mol.GetAtomWithIdx(1), [1, 2, 3]) == [0, 1, 0]
+
+def test_atom_explicit_valence():
+    mol = test_mol1()
+    assert atom_explicit_valence(mol.GetAtomWithIdx(0)) == [1]
+    assert atom_explicit_valence(mol.GetAtomWithIdx(1)) == [2]
+
 def test_atom_implicit_valence_one_hot():
     mol = test_mol1()
     assert atom_implicit_valence_one_hot(mol.GetAtomWithIdx(0), [1, 2, 3]) == [0, 0, 1]
@@ -106,6 +116,18 @@ def test_atom_is_aromatic():
     mol = test_mol2()
     assert atom_is_aromatic(mol.GetAtomWithIdx(0)) == [1]
 
+def test_atom_is_in_ring_one_hot():
+    mol = test_mol1()
+    assert atom_is_in_ring_one_hot(mol.GetAtomWithIdx(0)) == [1, 0]
+    mol = test_mol2()
+    assert atom_is_in_ring_one_hot(mol.GetAtomWithIdx(0)) == [0, 1]
+
+def test_atom_is_in_ring():
+    mol = test_mol1()
+    assert atom_is_in_ring(mol.GetAtomWithIdx(0)) == [0]
+    mol = test_mol2()
+    assert atom_is_in_ring(mol.GetAtomWithIdx(0)) == [1]
+
 def test_atom_chiral_tag_one_hot():
     mol = test_mol1()
     assert atom_chiral_tag_one_hot(mol.GetAtomWithIdx(0)) == [1, 0, 0, 0]
@@ -138,41 +160,71 @@ class TestAtomFeaturizer(BaseAtomFeaturizer):
 
 def test_base_atom_featurizer():
     test_featurizer = TestAtomFeaturizer()
+    assert test_featurizer.feat_size('h1') == 11
+    assert test_featurizer.feat_size('h2') == 5
     mol = test_mol1()
     feats = test_featurizer(mol)
-    torch.allclose(feats['h1'], torch.tensor([[0., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0.],
-                                              [0., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0.],
-                                              [0., 0., 1., 0., 0., 0., 0., 0., 1., 0., 0.]]))
-    torch.allclose(feats['h2'], torch.tensor([[1., 0., 0., 0., 0.],
-                                              [1., 0., 0., 0., 0.],
-                                              [1., 0., 0., 0., 0.]]))
+    assert torch.allclose(feats['h1'],
+                          torch.tensor([[0., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0.],
+                                        [0., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0.],
+                                        [0., 0., 1., 0., 0., 0., 0., 0., 1., 0., 0.]]))
+    assert torch.allclose(feats['h2'],
+                          torch.tensor([[1., 0., 0., 0., 0.],
+                                        [1., 0., 0., 0., 0.],
+                                        [1., 0., 0., 0., 0.]]))
 
 def test_canonical_atom_featurizer():
     test_featurizer = CanonicalAtomFeaturizer()
+    assert test_featurizer.feat_size() == 74
+    assert test_featurizer.feat_size('h') == 74
     mol = test_mol1()
     feats = test_featurizer(mol)
     assert list(feats.keys()) == ['h']
-    torch.allclose(feats['h'], torch.tensor([[1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0.,
-                                              0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0.,
-                                              1., 0.],
-                                             [1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 1.,
-                                              0., 0.],
-                                             [0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0.,
-                                              0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.,
-                                              0., 0.]]))
+    assert torch.allclose(feats['h'],
+                          torch.tensor([[1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0.,
+                                         0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0.,
+                                         1., 0.],
+                                        [1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0., 1.,
+                                         0., 0.],
+                                        [0., 0., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0.,
+                                         0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.,
+                                         0., 0.]]))
+
+def test_weave_atom_featurizer():
+    featurizer = WeaveAtomFeaturizer()
+    assert featurizer.feat_size() == 27
+    mol = test_mol1()
+    feats = featurizer(mol)
+    assert list(feats.keys()) == ['h']
+    assert torch.allclose(feats['h'],
+                          torch.tensor([[0.0000, 1.0000, 0.0000, 0.0000, 0.0000, 0.0000,
+                                         0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000,
+                                         0.0000, 0.0000, -0.0418, 0.0000, 0.0000, 0.0000,
+                                         1.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000,
+                                         0.0000, 0.0000, 0.0000],
+                                        [0.0000, 1.0000, 0.0000, 0.0000, 0.0000, 0.0000,
+                                         0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000,
+                                         0.0000, 0.0000, 0.0402, 0.0000, 0.0000, 0.0000,
+                                         1.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000,
+                                         0.0000, 0.0000, 0.0000],
+                                        [0.0000, 0.0000, 0.0000, 1.0000, 0.0000, 0.0000,
+                                         0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000,
+                                         0.0000, 0.0000, -0.3967, 0.0000, 0.0000, 0.0000,
+                                         1.0000, 1.0000, 1.0000, 0.0000, 0.0000, 0.0000,
+                                         0.0000, 0.0000, 0.0000]]), rtol=1e-3)
 
 def test_bond_type_one_hot():
     mol = test_mol1()
@@ -219,6 +271,8 @@ class TestBondFeaturizer(BaseBondFeaturizer):
 
 def test_base_bond_featurizer():
     test_featurizer = TestBondFeaturizer()
+    assert test_featurizer.feat_size('h1') == 2
+    assert test_featurizer.feat_size('h2') == 6
     mol = test_mol1()
     feats = test_featurizer(mol)
     assert torch.allclose(feats['h1'], torch.tensor([[0., 0.], [0., 0.], [0., 0.], [0., 0.]]))
@@ -229,6 +283,8 @@ def test_base_bond_featurizer():
 
 def test_canonical_bond_featurizer():
     test_featurizer = CanonicalBondFeaturizer()
+    assert test_featurizer.feat_size() == 12
+    assert test_featurizer.feat_size('e') == 12
     mol = test_mol1()
     feats = test_featurizer(mol)
     assert torch.allclose(feats['e'], torch.tensor(
@@ -236,6 +292,22 @@ def test_canonical_bond_featurizer():
          [1., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.],
          [1., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.],
          [1., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0., 0.]]))
+
+def test_weave_edge_featurizer():
+    test_featurizer = WeaveEdgeFeaturizer()
+    assert test_featurizer.feat_size() == 12
+    mol = test_mol1()
+    feats = test_featurizer(mol)
+    assert torch.allclose(feats['e'],
+                          torch.tensor([[0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+                                        [1., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0.],
+                                        [1., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+                                        [1., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0.],
+                                        [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+                                        [1., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0.],
+                                        [1., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
+                                        [1., 0., 0., 0., 0., 0., 0., 1., 0., 0., 0., 0.],
+                                        [0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]]))
 
 if __name__ == '__main__':
     test_one_hot_encoding()
@@ -246,6 +318,7 @@ if __name__ == '__main__':
     test_atom_degree()
     test_atom_total_degree_one_hot()
     test_atom_total_degree()
+    test_atom_explicit_valence()
     test_atom_implicit_valence_one_hot()
     test_atom_implicit_valence()
     test_atom_hybridization_one_hot()
@@ -257,11 +330,14 @@ if __name__ == '__main__':
     test_atom_num_radical_electrons()
     test_atom_is_aromatic_one_hot()
     test_atom_is_aromatic()
+    test_atom_is_in_ring_one_hot()
+    test_atom_is_in_ring()
     test_atom_chiral_tag_one_hot()
     test_atom_mass()
     test_concat_featurizer()
     test_base_atom_featurizer()
     test_canonical_atom_featurizer()
+    test_weave_atom_featurizer()
     test_bond_type_one_hot()
     test_bond_is_conjugated_one_hot()
     test_bond_is_conjugated()
@@ -270,3 +346,4 @@ if __name__ == '__main__':
     test_bond_stereo_one_hot()
     test_base_bond_featurizer()
     test_canonical_bond_featurizer()
+    test_weave_edge_featurizer()

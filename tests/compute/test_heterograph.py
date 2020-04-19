@@ -6,7 +6,7 @@ import scipy.sparse as ssp
 import itertools
 import backend as F
 import networkx as nx
-import unittest
+import unittest, pytest
 from dgl import DGLError
 
 def create_test_heterograph():
@@ -118,7 +118,7 @@ def test_create():
     try:
         g = dgl.graph(
             ([0, 0, 0, 1, 1, 2], [0, 1, 2, 0, 1, 2]),
-            card=2,
+            num_nodes=2,
             validate=True
         )
     except DGLError:
@@ -131,7 +131,7 @@ def test_create():
         try:
             g = dgl.bipartite(
                 ([0, 0, 1, 1, 2], [1, 1, 2, 2, 3]),
-                card=card,
+                num_nodes=card,
                 validate=True
             )
         except DGLError:
@@ -222,9 +222,9 @@ def test_query():
             # edge_id & edge_ids
             for i, (src, dst) in enumerate(zip(srcs, dsts)):
                 assert g.edge_id(src, dst, etype=etype) == i
-                assert F.asnumpy(g.edge_id(src, dst, etype=etype, force_multi=True)).tolist() == [i]
+                assert F.asnumpy(g.edge_id(src, dst, etype=etype, return_array=True)).tolist() == [i]
             assert F.asnumpy(g.edge_ids(srcs, dsts, etype=etype)).tolist() == list(range(n_edges))
-            u, v, e = g.edge_ids(srcs, dsts, etype=etype, force_multi=True)
+            u, v, e = g.edge_ids(srcs, dsts, etype=etype, return_uv=True)
             assert F.asnumpy(u).tolist() == srcs
             assert F.asnumpy(v).tolist() == dsts
             assert F.asnumpy(e).tolist() == list(range(n_edges))
@@ -361,6 +361,31 @@ def test_hypersparse():
     assert g.out_degree(0, 'plays') == 1
     assert g.out_degree(N2, 'plays') == 0
     assert F.asnumpy(g.out_degrees([0, N2], 'plays')).tolist() == [1, 0]
+
+def test_edge_ids():
+    N1 = 1 << 50        # should crash if allocated a CSR
+    N2 = 1 << 48
+
+    g = dgl.heterograph({
+        ('user', 'follows', 'user'): [(0, 1)],
+        ('user', 'plays', 'game'): [(0, N2)]},
+        {'user': N1, 'game': N1})
+    with pytest.raises(AssertionError):
+        eids = g.edge_ids(0, 0, etype='follows')
+
+    with pytest.raises(AssertionError):
+        eid = g.edge_id(0, 0, etype='follows')
+
+    g2 = dgl.heterograph({
+        ('user', 'follows', 'user'): [(0, 1), (0, 1)],
+        ('user', 'plays', 'game'): [(0, N2)]},
+        {'user': N1, 'game': N1})
+
+    with pytest.raises(AssertionError):
+        eids = g2.edge_ids(0, 1, etype='follows')
+
+    with pytest.raises(AssertionError):
+        eid = g2.edge_id(0, 1, etype='follows')
 
 def test_adj():
     g = create_test_heterograph()
@@ -521,9 +546,9 @@ def test_view1():
             # edge_id & edge_ids
             for i, (src, dst) in enumerate(zip(srcs, dsts)):
                 assert g.edge_id(src, dst) == i
-                assert F.asnumpy(g.edge_id(src, dst, force_multi=True)).tolist() == [i]
+                assert F.asnumpy(g.edge_id(src, dst, return_array=True)).tolist() == [i]
             assert F.asnumpy(g.edge_ids(srcs, dsts)).tolist() == list(range(n_edges))
-            u, v, e = g.edge_ids(srcs, dsts, force_multi=True)
+            u, v, e = g.edge_ids(srcs, dsts, return_uv=True)
             assert F.asnumpy(u).tolist() == srcs
             assert F.asnumpy(v).tolist() == dsts
             assert F.asnumpy(e).tolist() == list(range(n_edges))
@@ -711,6 +736,7 @@ def test_flatten():
     assert fg.etypes == ['follows+knows']
     check_mapping(g, fg)
 
+@unittest.skipIf(F._default_context_str == 'cpu', reason="Need gpu for this test")
 def test_to_device():
     hg = create_test_heterograph()
     if F.is_cuda_available():
@@ -720,14 +746,14 @@ def test_to_device():
 def test_convert_bound():
     def _test_bipartite_bound(data, card):
         try:
-            dgl.bipartite(data, card=card)
+            dgl.bipartite(data, num_nodes=card)
         except dgl.DGLError:
             return
         assert False, 'bipartite bound test with wrong uid failed'
 
     def _test_graph_bound(data, card):
         try:
-            dgl.graph(data, card=card)
+            dgl.graph(data, num_nodes=card)
         except dgl.DGLError:
             return
         assert False, 'graph bound test with wrong uid failed'
@@ -827,7 +853,7 @@ def test_convert():
         assert len(hg.etypes) == 2
 
     # hetero_to_homo test case 2
-    hg = dgl.bipartite([(0, 0), (1, 1)], card=(2, 3))
+    hg = dgl.bipartite([(0, 0), (1, 1)], num_nodes=(2, 3))
     g = dgl.to_homo(hg)
     assert g.number_of_nodes() == 5
 
@@ -913,6 +939,18 @@ def test_subgraph():
     _check_typed_subgraph2(g, sg4)
     sg5 = g.edge_type_subgraph(['follows', 'plays', 'wishes'])
     _check_typed_subgraph1(g, sg5)
+
+    # Test for restricted format
+    for fmt in ['csr', 'csc', 'coo']:
+        g = dgl.graph([(0, 1), (1, 2)], restrict_format=fmt)
+        sg = g.subgraph({g.ntypes[0]: [1, 0]})
+        nids = F.asnumpy(sg.ndata[dgl.NID])
+        assert np.array_equal(nids, np.array([1, 0]))
+        src, dst = sg.all_edges(order='eid')
+        src = F.asnumpy(src)
+        dst = F.asnumpy(dst)
+        assert np.array_equal(src, np.array([1]))
+        assert np.array_equal(dst, np.array([0]))
 
 def test_apply():
     def node_udf(nodes):
@@ -1448,6 +1486,94 @@ def test_stack_reduce():
             'stack')
     assert g.nodes['game'].data['y'].shape == (g.number_of_nodes('game'), 1, 200)
 
+def test_isolated_ntype():
+    g = dgl.heterograph({
+        ('A', 'AB', 'B'): [(0, 1), (1, 2), (2, 3)]},
+        num_nodes_dict={'A': 3, 'B': 4, 'C': 4})
+    assert g.number_of_nodes('A') == 3
+    assert g.number_of_nodes('B') == 4
+    assert g.number_of_nodes('C') == 4
+
+    g = dgl.heterograph({
+        ('A', 'AC', 'C'): [(0, 1), (1, 2), (2, 3)]},
+        num_nodes_dict={'A': 3, 'B': 4, 'C': 4})
+    assert g.number_of_nodes('A') == 3
+    assert g.number_of_nodes('B') == 4
+    assert g.number_of_nodes('C') == 4
+
+    G = dgl.DGLGraph()
+    G.add_nodes(11)
+    G.add_edges([0, 1, 2], [4, 5, 6])
+    G.ndata[dgl.NTYPE] = F.tensor([0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2], dtype=F.int64)
+    G.edata[dgl.ETYPE] = F.tensor([0, 0, 0], dtype=F.int64)
+    g = dgl.to_hetero(G, ['A', 'B', 'C'], ['AB'])
+    assert g.number_of_nodes('A') == 3
+    assert g.number_of_nodes('B') == 4
+    assert g.number_of_nodes('C') == 4
+
+def test_ismultigraph():
+    g1 = dgl.bipartite([(0, 1), (0, 2), (1, 5), (2, 5)], 'A', 'AB', 'B', num_nodes=(6, 6))
+    assert g1.is_multigraph == False
+    g2 = dgl.bipartite([(0, 1), (0, 1), (0, 2), (1, 5)], 'A', 'AC', 'C', num_nodes=(6, 6))
+    assert g2.is_multigraph == True
+    g3 = dgl.graph([(0, 1), (1, 2)], 'A', 'AA', num_nodes=6)
+    assert g3.is_multigraph == False
+    g4 = dgl.graph([(0, 1), (0, 1), (1, 2)], 'A', 'AA', num_nodes=6)
+    assert g4.is_multigraph == True
+    g = dgl.hetero_from_relations([g1, g3])
+    assert g.is_multigraph == False
+    g = dgl.hetero_from_relations([g1, g2])
+    assert g.is_multigraph == True
+    g = dgl.hetero_from_relations([g1, g4])
+    assert g.is_multigraph == True
+    g = dgl.hetero_from_relations([g2, g4])
+    assert g.is_multigraph == True
+
+def test_bipartite():
+    g1 = dgl.bipartite([(0, 1), (0, 2), (1, 5)], 'A', 'AB', 'B')
+    assert g1.is_unibipartite
+    assert len(g1.ntypes) == 2
+    assert g1.etypes == ['AB']
+    assert g1.srctypes == ['A']
+    assert g1.dsttypes == ['B']
+    assert g1.number_of_nodes('A') == 2
+    assert g1.number_of_nodes('B') == 6
+    assert g1.number_of_src_nodes('A') == 2
+    assert g1.number_of_src_nodes() == 2
+    assert g1.number_of_dst_nodes('B') == 6
+    assert g1.number_of_dst_nodes() == 6
+    assert g1.number_of_edges() == 3
+    g1.srcdata['h'] = F.randn((2, 5))
+    assert F.array_equal(g1.srcnodes['A'].data['h'], g1.srcdata['h'])
+    assert F.array_equal(g1.nodes['A'].data['h'], g1.srcdata['h'])
+    assert F.array_equal(g1.nodes['SRC/A'].data['h'], g1.srcdata['h'])
+    g1.dstdata['h'] = F.randn((6, 3))
+    assert F.array_equal(g1.dstnodes['B'].data['h'], g1.dstdata['h'])
+    assert F.array_equal(g1.nodes['B'].data['h'], g1.dstdata['h'])
+    assert F.array_equal(g1.nodes['DST/B'].data['h'], g1.dstdata['h'])
+
+    # more complicated bipartite
+    g2 = dgl.bipartite([(1, 0), (0, 0)], 'A', 'AC', 'C')
+    g3 = dgl.hetero_from_relations([g1, g2])
+    assert g3.is_unibipartite
+    assert g3.srctypes == ['A']
+    assert set(g3.dsttypes) == {'B', 'C'}
+    assert g3.number_of_nodes('A') == 2
+    assert g3.number_of_nodes('B') == 6
+    assert g3.number_of_nodes('C') == 1
+    assert g3.number_of_src_nodes('A') == 2
+    assert g3.number_of_src_nodes() == 2
+    assert g3.number_of_dst_nodes('B') == 6
+    assert g3.number_of_dst_nodes('C') == 1
+    g3.srcdata['h'] = F.randn((2, 5))
+    assert F.array_equal(g3.srcnodes['A'].data['h'], g3.srcdata['h'])
+    assert F.array_equal(g3.nodes['A'].data['h'], g3.srcdata['h'])
+    assert F.array_equal(g3.nodes['SRC/A'].data['h'], g3.srcdata['h'])
+
+    g4 = dgl.graph([(0, 0), (1, 1)], 'A', 'AA')
+    g5 = dgl.hetero_from_relations([g1, g2, g4])
+    assert not g5.is_unibipartite
+
 if __name__ == '__main__':
     test_create()
     test_query()
@@ -1470,3 +1596,5 @@ if __name__ == '__main__':
     test_empty_heterograph()
     test_types_in_function()
     test_stack_reduce()
+    test_isolated_ntype()
+    test_bipartite()

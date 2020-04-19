@@ -55,6 +55,21 @@ DGL_REGISTER_GLOBAL("heterograph_index._CAPI_DGLHeteroCreateHeteroGraph")
     *rv = HeteroGraphRef(hgptr);
   });
 
+DGL_REGISTER_GLOBAL("heterograph_index._CAPI_DGLHeteroCreateHeteroGraphWithNumNodes")
+.set_body([] (DGLArgs args, DGLRetValue* rv) {
+    GraphRef meta_graph = args[0];
+    List<HeteroGraphRef> rel_graphs = args[1];
+    IdArray num_nodes_per_type = args[2];
+    std::vector<HeteroGraphPtr> rel_ptrs;
+    rel_ptrs.reserve(rel_graphs.size());
+    for (const auto& ref : rel_graphs) {
+      rel_ptrs.push_back(ref.sptr());
+    }
+    auto hgptr = CreateHeteroGraph(
+        meta_graph.sptr(), rel_ptrs, num_nodes_per_type.ToVector<int64_t>());
+    *rv = HeteroGraphRef(hgptr);
+  });
+
 ///////////////////////// HeteroGraph member functions /////////////////////////
 
 DGL_REGISTER_GLOBAL("heterograph_index._CAPI_DGLHeteroGetMetaGraph")
@@ -453,6 +468,12 @@ DGL_REGISTER_GLOBAL("transform._CAPI_DGLOutSubgraph")
     std::shared_ptr<HeteroSubgraph> ret(new HeteroSubgraph);
     *ret = OutEdgeGraph(hg.sptr(), nodes);
     *rv = HeteroGraphRef(ret);
+  });
+
+DGL_REGISTER_GLOBAL("transform._CAPI_DGLAsImmutableGraph")
+.set_body([] (DGLArgs args, DGLRetValue* rv) {
+    HeteroGraphRef hg = args[0];
+    *rv = GraphRef(hg->AsImmutableGraph());
   });
 
 }  // namespace dgl

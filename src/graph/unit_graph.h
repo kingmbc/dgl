@@ -92,6 +92,11 @@ class UnitGraph : public BaseHeteroGraph {
 
   uint64_t NumVertices(dgl_type_t vtype) const override;
 
+  inline std::vector<int64_t> NumVerticesPerType() const override {
+    LOG(FATAL) << "[BUG] NumVerticesPerType() not supported on unit graphs.";
+    return {};
+  }
+
   uint64_t NumEdges(dgl_type_t etype) const override;
 
   bool HasVertex(dgl_type_t vtype, dgl_id_t vid) const override;
@@ -161,21 +166,31 @@ class UnitGraph : public BaseHeteroGraph {
   /*! \brief Create a graph from COO arrays */
   static HeteroGraphPtr CreateFromCOO(
       int64_t num_vtypes, int64_t num_src, int64_t num_dst,
-      IdArray row, IdArray col, SparseFormat restrict_format = SparseFormat::ANY);
+      IdArray row, IdArray col, SparseFormat restrict_format = SparseFormat::kAny);
 
   static HeteroGraphPtr CreateFromCOO(
       int64_t num_vtypes, const aten::COOMatrix& mat,
-      SparseFormat restrict_format = SparseFormat::ANY);
+      SparseFormat restrict_format = SparseFormat::kAny);
 
   /*! \brief Create a graph from (out) CSR arrays */
   static HeteroGraphPtr CreateFromCSR(
       int64_t num_vtypes, int64_t num_src, int64_t num_dst,
       IdArray indptr, IdArray indices, IdArray edge_ids,
-      SparseFormat restrict_format = SparseFormat::ANY);
+      SparseFormat restrict_format = SparseFormat::kAny);
 
   static HeteroGraphPtr CreateFromCSR(
       int64_t num_vtypes, const aten::CSRMatrix& mat,
-      SparseFormat restrict_format = SparseFormat::ANY);
+      SparseFormat restrict_format = SparseFormat::kAny);
+
+  /*! \brief Create a graph from (in) CSC arrays */
+  static HeteroGraphPtr CreateFromCSC(
+      int64_t num_vtypes, int64_t num_src, int64_t num_dst,
+      IdArray indptr, IdArray indices, IdArray edge_ids,
+      SparseFormat restrict_format = SparseFormat::kAny);
+
+  static HeteroGraphPtr CreateFromCSC(
+      int64_t num_vtypes, const aten::CSRMatrix& mat,
+      SparseFormat restrict_format = SparseFormat::kAny);
 
   /*! \brief Convert the graph to use the given number of bits for storage */
   static HeteroGraphPtr AsNumBits(HeteroGraphPtr g, uint8_t bits);
@@ -214,6 +229,10 @@ class UnitGraph : public BaseHeteroGraph {
  private:
   friend class Serializer;
   friend class HeteroGraph;
+  friend class ImmutableGraph;
+
+  // private empty constructor
+  UnitGraph() {}
 
   /*!
    * \brief constructor
@@ -223,7 +242,26 @@ class UnitGraph : public BaseHeteroGraph {
    * \param coo coo
    */
   UnitGraph(GraphPtr metagraph, CSRPtr in_csr, CSRPtr out_csr, COOPtr coo,
-            SparseFormat restrict_format = SparseFormat::ANY);
+            SparseFormat restrict_format = SparseFormat::kAny);
+
+  /*!
+   * \brief constructor
+   * \param metagraph metagraph
+   * \param in_csr in edge csr
+   * \param out_csr out edge csr
+   * \param coo coo
+   * \param has_in_csr whether in_csr is valid
+   * \param has_out_csr whether out_csr is valid
+   * \param has_coo whether coo is valid
+   */
+  static HeteroGraphPtr CreateHomographFrom(
+      const aten::CSRMatrix &in_csr,
+      const aten::CSRMatrix &out_csr,
+      const aten::COOMatrix &coo,
+      bool has_in_csr,
+      bool has_out_csr,
+      bool has_coo,
+      SparseFormat restrict_format = SparseFormat::kAny);
 
   /*! \return Return any existing format. */
   HeteroGraphPtr GetAny() const;
@@ -250,8 +288,7 @@ class UnitGraph : public BaseHeteroGraph {
   /*! \return Whether the graph is hypersparse */
   bool IsHypersparse() const;
 
-  // Empty Graph for Serializer Usgae
-  static UnitGraph* EmptyGraph();
+  GraphPtr AsImmutableGraph() const override;
 
   // Graph stored in different format. We use an on-demand strategy: the format is
   // only materialized if the operation that suitable for it is invoked.
@@ -275,6 +312,8 @@ class UnitGraph : public BaseHeteroGraph {
 
 namespace dmlc {
 DMLC_DECLARE_TRAITS(has_saveload, dgl::UnitGraph, true);
+DMLC_DECLARE_TRAITS(has_saveload, dgl::UnitGraph::CSR, true);
+DMLC_DECLARE_TRAITS(has_saveload, dgl::UnitGraph::COO, true);
 }  // namespace dmlc
 
 #endif  // DGL_GRAPH_UNIT_GRAPH_H_
