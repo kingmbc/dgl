@@ -26,27 +26,26 @@ def get_graph(network_data, vocab):
         keys describing the edge types, values representing edges
     vocab: a dict
         mapping node IDs to node indices
-<<<<<<< HEAD
-=======
-
->>>>>>> c334b40e1f8a30bd5619814f34a469b18774fba7
     Output
     ------
     DGLHeteroGraph
         a heterogenous graph, with one node type and different edge types
     '''
     graphs = []
-    num_nodes = len(vocab)
+
+    node_type = '_N' # '_N' can be replaced by an arbitrary name
+    data_dict = dict()
+    num_nodes_dict = {node_type: len(vocab)}
 
     for edge_type in network_data:
         tmp_data = network_data[edge_type]
-        edges = []
+        src = []
+        dst = []
         for edge in tmp_data:
-            edges.append((vocab[edge[0]], vocab[edge[1]]))
-            edges.append((vocab[edge[1]], vocab[edge[0]]))
-        g = dgl.graph(edges, etype=edge_type, num_nodes=num_nodes)
-        graphs.append(g)
-    graph = dgl.hetero_from_relations(graphs)
+            src.extend([vocab[edge[0]], vocab[edge[1]]])
+            dst.extend([vocab[edge[1]], vocab[edge[0]]])
+        data_dict[(node_type, edge_type, node_type)] = (src, dst)
+    graph = dgl.heterograph(data_dict, num_nodes_dict)
     
     return graph
 

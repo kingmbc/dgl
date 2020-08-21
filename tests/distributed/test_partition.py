@@ -4,7 +4,7 @@ import os
 import numpy as np
 from scipy import sparse as spsp
 from numpy.testing import assert_array_equal
-from dgl.graph_index import create_graph_index
+from dgl.heterograph_index import create_unitgraph_from_coo
 from dgl.distributed import partition_graph, load_partition
 from dgl import function as fn
 import backend as F
@@ -14,24 +14,22 @@ import random
 
 def create_random_graph(n):
     arr = (spsp.random(n, n, density=0.001, format='coo', random_state=100) != 0).astype(np.int64)
-    ig = create_graph_index(arr, readonly=True)
-    return dgl.DGLGraph(ig)
+    return dgl.from_scipy(arr)
 
-def check_partition(reshuffle):
-    g = create_random_graph(10000)
+def check_partition(g, part_method, reshuffle):
     g.ndata['labels'] = F.arange(0, g.number_of_nodes())
-    g.ndata['feats'] = F.tensor(np.random.randn(g.number_of_nodes(), 10))
-    g.edata['feats'] = F.tensor(np.random.randn(g.number_of_edges(), 10))
+    g.ndata['feats'] = F.tensor(np.random.randn(g.number_of_nodes(), 10), F.float32)
+    g.edata['feats'] = F.tensor(np.random.randn(g.number_of_edges(), 10), F.float32)
     g.update_all(fn.copy_src('feats', 'msg'), fn.sum('msg', 'h'))
     g.update_all(fn.copy_edge('feats', 'msg'), fn.sum('msg', 'eh'))
     num_parts = 4
     num_hops = 2
 
     partition_graph(g, 'test', num_parts, '/tmp/partition', num_hops=num_hops,
-                    part_method='metis', reshuffle=reshuffle)
+                    part_method=part_method, reshuffle=reshuffle)
     part_sizes = []
     for i in range(num_parts):
-        part_g, node_feats, edge_feats, gpb = load_partition('/tmp/partition/test.json', i)
+        part_g, node_feats, edge_feats, gpb, _ = load_partition('/tmp/partition/test.json', i)
 
         # Check the metadata
         assert gpb._num_nodes() == g.number_of_nodes()
@@ -45,19 +43,23 @@ def check_partition(reshuffle):
         part_sizes.append((gpb_meta[i]['num_nodes'], gpb_meta[i]['num_edges']))
 
         local_nid = gpb.nid2localnid(F.boolean_mask(part_g.ndata[dgl.NID], part_g.ndata['inner_node']), i)
+        assert F.dtype(local_nid) in (F.int64, F.int32)
         assert np.all(F.asnumpy(local_nid) == np.arange(0, len(local_nid)))
         local_eid = gpb.eid2localeid(F.boolean_mask(part_g.edata[dgl.EID], part_g.edata['inner_edge']), i)
+        assert F.dtype(local_eid) in (F.int64, F.int32)
         assert np.all(F.asnumpy(local_eid) == np.arange(0, len(local_eid)))
 
         # Check the node map.
         local_nodes = F.boolean_mask(part_g.ndata[dgl.NID], part_g.ndata['inner_node'])
         llocal_nodes = F.nonzero_1d(part_g.ndata['inner_node'])
         local_nodes1 = gpb.partid2nids(i)
+        assert F.dtype(local_nodes1) in (F.int32, F.int64)
         assert np.all(np.sort(F.asnumpy(local_nodes)) == np.sort(F.asnumpy(local_nodes1)))
 
         # Check the edge map.
         local_edges = F.boolean_mask(part_g.edata[dgl.EID], part_g.edata['inner_edge'])
         local_edges1 = gpb.partid2eids(i)
+        assert F.dtype(local_edges1) in (F.int32, F.int64)
         assert np.all(np.sort(F.asnumpy(local_edges)) == np.sort(F.asnumpy(local_edges1)))
 
         if reshuffle:
@@ -93,14 +95,31 @@ def check_partition(reshuffle):
             edge_map.append(np.ones(num_edges) * i)
         node_map = np.concatenate(node_map)
         edge_map = np.concatenate(edge_map)
-        assert np.all(F.asnumpy(gpb.nid2partid(F.arange(0, len(node_map)))) == node_map)
-        assert np.all(F.asnumpy(gpb.eid2partid(F.arange(0, len(edge_map)))) == edge_map)
+        nid2pid = gpb.nid2partid(F.arange(0, len(node_map)))
+        assert F.dtype(nid2pid) in (F.int32, F.int64)
+        assert np.all(F.asnumpy(nid2pid) == node_map)
+        eid2pid = gpb.eid2partid(F.arange(0, len(edge_map)))
+        assert F.dtype(eid2pid) in (F.int32, F.int64)
+        assert np.all(F.asnumpy(eid2pid) == edge_map)
 
+@unittest.skipIf(os.name == 'nt', reason='Do not support windows yet')
 def test_partition():
-    check_partition(True)
-    check_partition(False)
+    g = create_random_graph(10000)
+    check_partition(g, 'metis', True)
+    check_partition(g, 'metis', False)
+    check_partition(g, 'random', True)
+    check_partition(g, 'random', False)
+
+@unittest.skipIf(os.name == 'nt', reason='Do not support windows yet')
+def test_hetero_partition():
+    g = create_random_graph(10000)
+    check_partition(g, 'metis', True)
+    check_partition(g, 'metis', False)
+    check_partition(g, 'random', True)
+    check_partition(g, 'random', False)
 
 
 if __name__ == '__main__':
     os.makedirs('/tmp/partition', exist_ok=True)
     test_partition()
+    test_hetero_partition()
